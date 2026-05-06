@@ -1,0 +1,6 @@
+Scripts/
+Include/
+Lib/
+sesion_whatsapp/
+__pycache__/
+*.pyc
