@@ -83,14 +83,23 @@ def iniciar_envio(df_filtrado):
 
         # Obtener datos del CSV
         nombre = str(fila['Nombre']).strip()
-        numero = str(fila['Numero']).replace(".0", "").strip()
+        carnet = str(fila['Carnet']).strip()
+        numero_crudo = str(fila['Numero']).replace(".0", "").strip()
+        # Si el número NO empieza con 52, se lo agregamos
+        if not numero_crudo.startswith("52"):
+            numero = "52" + numero_crudo
+        else:
+            numero = numero_crudo
+        hora_cita = str(fila['Hora']).strip()
+        fecha_cita = str(fila['Fecha de cita']).strip()
         hora_cita = str(fila['Hora']).strip()
         fecha_cita = str(fila['Fecha de cita']).strip()
 
         # Construir mensaje personalizado
         mensaje_completo = (
-            f"Hola {nombre}, le recordamos su cita el día {fecha_cita} a las {hora_cita} en CRIT Tijuana. "
-            f"Favor de confirmar con la palabra 'Recibido'."
+            f"Buen día {nombre}, le recordamos la cita del paciente con carnet {carnet} programada para el día {fecha_cita} a las {hora_cita} en CRIT Tijuana. "
+            f"Le pedimos confirmar de recibido respondiendo con la palabra 'Recibido'. ¡Gracias!"
+
         )
 
         # Convertir mensaje a formato URL
@@ -139,7 +148,12 @@ def procesar_seleccion(opcion):
         directorio_actual = os.path.dirname(os.path.abspath(__file__))
         ruta_csv = os.path.join(directorio_actual, 'datos - Numeros.csv')
 
-        df = pd.read_csv(ruta_csv, sep=None, engine='python')
+        df = pd.read_csv(
+            ruta_csv,
+            sep=None,
+            engine='python',
+            dtype={"Carnet": str}
+        )
 
         # Limpiar nombres de columnas
         df.columns = df.columns.str.strip()
