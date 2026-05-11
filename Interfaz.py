@@ -1,140 +1,124 @@
-# =========================
-# IMPORTACIÓN DE LIBRERÍAS
-# =========================
-import pandas as pd  # Para manejo de datos (CSV)
-from selenium import webdriver  # Para automatizar el navegador
-from selenium.webdriver.edge.options import Options  # Opciones de Edge
-from selenium.webdriver.common.keys import Keys  # Para enviar teclas (ENTER)
-import urllib.parse  # Para codificar mensajes en URL
-import time  # Para pausas
-import os  # Manejo de rutas
-import random  # Para tiempos aleatorios (evitar bloqueo)
-import tkinter as tk  # Interfaz gráfica
-from tkinter import messagebox  # Ventanas emergentes
-from PIL import Image, ImageTk  # Manejo de imágenes
-import ctypes  # Ajustes de resolución (DPI)
+import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.edge.options import Options
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import urllib.parse
+import time
+import os
+import random
+import tkinter as tk
+from tkinter import messagebox
+from PIL import Image, ImageTk
+import ctypes
 
 # =========================
-# CONFIGURACIÓN DE PANTALLA (DPI)
+# CONFIGURACIÓN DE PANTALLA
 # =========================
-# Esto ayuda a que la interfaz no se vea borrosa en Windows
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 except Exception:
-    try:
-        ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
+    pass
+
+COLOR_PRIMARIO = "#681A73"
+COLOR_ACENTO = "#F2CB05"
+COLOR_TEXTO = "#FFFFFF"
+FUENTE_TIERNA = ("Comic Sans MS", 11, "bold")
+
 
 # =========================
-# COLORES Y ESTILO
-# =========================
-COLOR_PRIMARIO = "#681A73"  # Morado
-COLOR_ACENTO = "#F2CB05"    # Amarillo
-COLOR_TEXTO = "#FFFFFF"     # Blanco
-FUENTE_TIERNA = ("Comic Sans MS", 11, "bold")  # Fuente amigable
-
-# =========================
-# FUNCIÓN PRINCIPAL DE ENVÍO
+# FUNCIÓN DE ENVÍO
 # =========================
 def iniciar_envio(df_filtrado):
-    """
-    Recibe un DataFrame con los contactos filtrados
-    y envía mensajes por WhatsApp Web automáticamente.
-    """
-
-    # Validación: si no hay datos
     if df_filtrado.empty:
         messagebox.showwarning("Sin datos", "No hay registros en el bloque seleccionado.")
         return
 
-    # Configuración del navegador Edge
-    edge_options = Options()
+    df_agrupado = df_filtrado.groupby(['Numero', 'Nombre', 'Fecha de cita']).agg({
+        'Carnet': lambda x: ', '.join(map(str, x.unique())),
+        'Hora': lambda x: ' y '.join(map(str, x.unique()))
+    }).reset_index()
 
-    # Ruta donde se guardará la sesión (evita escanear QR cada vez)
+    edge_options = Options()
     directorio_actual = os.path.dirname(os.path.abspath(__file__))
     ruta_sesion = os.path.join(directorio_actual, "sesion_whatsapp")
 
     edge_options.add_argument(f"user-data-dir={ruta_sesion}")
-
-    # Configuración para evitar detección como bot
     edge_options.add_argument("--disable-blink-features=AutomationControlled")
     edge_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    edge_options.add_experimental_option("useAutomationExtension", False)
 
-    # Intentar abrir navegador
     try:
         driver = webdriver.Edge(options=edge_options)
-    except Exception:
-        messagebox.showerror("Error de Sesión",
-                             "No se pudo abrir el navegador.\n\nCierra WhatsApp Web antes de iniciar.")
+    except Exception as e:
+        messagebox.showerror("Error", f"Cierra otras ventanas de Edge.\n{e}")
         return
 
-    # Abrir WhatsApp Web
     driver.get("https://web.whatsapp.com")
-
-    # Esperar a que el usuario inicie sesión
     messagebox.showinfo("WhatsApp Web", "Espera a que carguen tus chats y presiona Aceptar.")
 
-    # =========================
-    # ENVÍO DE MENSAJES
-    # =========================
-    for index, (idx_original, fila) in enumerate(df_filtrado.iterrows()):
+    enviados = 0
+    fallidos = []
 
-        # Obtener datos del CSV
+    for index, fila in df_agrupado.iterrows():
         nombre = str(fila['Nombre']).strip()
-        carnet = str(fila['Carnet']).strip()
-        numero_crudo = str(fila['Numero']).replace(".0", "").strip()
-        # Si el número NO empieza con 52, se lo agregamos
-        if not numero_crudo.startswith("52"):
-            numero = "52" + numero_crudo
-        else:
-            numero = numero_crudo
-        hora_cita = str(fila['Hora']).strip()
-        fecha_cita = str(fila['Fecha de cita']).strip()
-        hora_cita = str(fila['Hora']).strip()
-        fecha_cita = str(fila['Fecha de cita']).strip()
+        carnets = str(fila['Carnet']).strip()
+        # Limpieza profunda del número
+        num_limpio = "".join(filter(str.isdigit, str(fila['Numero'])))
+        numero = "52" + num_limpio if not num_limpio.startswith("52") else num_limpio
 
-        # Construir mensaje personalizado
         mensaje_completo = (
-            f"Buen día {nombre}, le recordamos la cita del paciente con carnet {carnet} programada para el día {fecha_cita} a las {hora_cita} en CRIT Tijuana. "
-            f"Le pedimos confirmar de recibido respondiendo con la palabra 'Recibido'. ¡Gracias!"
-
+            f"Buen día {nombre}, le recordamos la(s) cita(s) del paciente con carnet(s) {carnets} "
+            f"programada(s) para el día {fila['Fecha de cita']} a las {fila['Hora']} en CRIT Tijuana. "
+            f"Confirme respondiendo 'Recibido'. ¡Gracias!"
         )
 
-        # Convertir mensaje a formato URL
-        mensaje_url = urllib.parse.quote(mensaje_completo)
-
-        # Crear enlace de WhatsApp
-        url = f"https://web.whatsapp.com/send?phone={numero}&text={mensaje_url}"
-
-        # Abrir chat del contacto
+        url = f"https://web.whatsapp.com/send?phone={numero}&text={urllib.parse.quote(mensaje_completo)}"
         driver.get(url)
 
-        # Espera para que cargue el chat
-        time.sleep(random.randint(15, 20))
-
         try:
-            # Enviar mensaje presionando ENTER
-            acciones = webdriver.ActionChains(driver)
-            acciones.send_keys(Keys.ENTER)
-            acciones.perform()
-        except Exception as e:
-            print(f"Error con {nombre}: {e}")
+            # Esperar a que la caja de texto aparezca (señal de que el chat cargó)
+            # El selector '[contenteditable="true"]' es el más estable de WhatsApp Web
+            wait = WebDriverWait(driver, 30)
+            caja_texto = wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'div[contenteditable="true"][data-tab="10"]')))
 
-        # Espera entre mensajes (simula comportamiento humano)
-        time.sleep(random.randint(5, 8))
+            # Verificación rápida: ¿Apareció el mensaje de "Número no válido"?
+            time.sleep(2)
+            error_popup = driver.find_elements(By.XPATH,
+                                               '//div[contains(text(), "inválido") or contains(text(), "no existe")]')
 
-        # Pausa larga cada 15 mensajes (evitar bloqueo)
-        if (index + 1) % 15 == 0 and (index + 1) < len(df_filtrado):
-            time.sleep(random.randint(60, 90))
+            if error_popup:
+                fallidos.append(f"{nombre} ({numero}) - No existe")
+                continue
 
-    # Mensaje final
-    messagebox.showinfo("Finalizado", "Proceso completado.")
+            # Enviar con ENTER directamente en la caja de texto
+            time.sleep(1)
+            caja_texto.send_keys(Keys.ENTER)
+            enviados += 1
+            print(f"✅ Enviado: {nombre}")
 
-    # Cerrar navegador
+        except Exception:
+            fallidos.append(f"{nombre} ({numero}) - No existe el número")
+            print(f"❌ Falló: {nombre}")
+
+        # Pausas humanas para evitar bloqueos
+        time.sleep(random.randint(4, 7))
+
+        # Pausa larga cada 15 mensajes para simular comportamiento humano
+        if (index + 1) % 15 == 0:
+            time.sleep(random.randint(40, 60))
+
     driver.quit()
 
+    resumen = f"✅ Proceso finalizado\n\nEnviados: {enviados}"
+    if fallidos:
+        resumen += "\n\n❌ No enviados:\n" + "\n".join(fallidos)
+    messagebox.showinfo("Resumen", resumen)
+
+
+# ... (El resto de tu código de la Interfaz GUI se mantiene igual) ...
 # =========================
 # FILTRADO POR HORARIO
 # =========================
