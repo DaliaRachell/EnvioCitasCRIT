@@ -71,7 +71,8 @@ def iniciar_envio(df_filtrado):
         mensaje_completo = (
             f"Buen día {nombre}, le recordamos la cita del paciente con carnet {carnets} "
             f"programada para el día {fila['Fecha de cita']} a las {fila['Hora']} en CRIT Tijuana. "
-            f"Confirme respondiendo 'Recibido'. ¡Gracias!"
+            f"Confirme respondiendo 'Recibido'. "
+            f"En caso de no poder asistir, favor de comunicarse al número 664 999 00. ¡Gracias!"
         )
 
         url = f"https://web.whatsapp.com/send?phone={numero}&text={urllib.parse.quote(mensaje_completo)}"
