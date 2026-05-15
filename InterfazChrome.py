@@ -1,6 +1,6 @@
 import pandas as pd
 from selenium import webdriver
-# CAMBIO: Importación para Chrome
+# Se cambian las opciones de Edge por las de Chrome
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.keys import Keys
@@ -38,28 +38,35 @@ def iniciar_envio(df_filtrado):
         messagebox.showwarning("Sin datos", "No hay registros en el bloque seleccionado.")
         return
 
+    directorio_actual = os.path.dirname(os.path.abspath(__file__))
+    ruta_ladas = os.path.join(directorio_actual, 'ladas_mexico.csv')
+
+    try:
+        df_ladas = pd.read_csv(ruta_ladas, dtype=str)
+        lista_ladas_mex = df_ladas.iloc[:, 0].tolist()
+    except Exception as e:
+        messagebox.showerror("Error", f"No se pudo cargar ladas_mexico.csv: {e}")
+        return
+
     df_agrupado = df_filtrado.groupby(['NUMERO', 'NOMBRE', 'FECHA DE CITA']).agg({
         'CARNET': lambda x: ', '.join(map(str, x.unique())),
         'HORA': lambda x: ' y '.join(map(str, x.unique()))
     }).reset_index()
 
-    # CAMBIO: Configuración de Chrome Options
+    # --- CONFIGURACIÓN DE CHROME ---
     chrome_options = Options()
-    directorio_actual = os.path.dirname(os.path.abspath(__file__))
-    # Carpeta específica para la sesión de Chrome
+    # Usamos una carpeta específica para la sesión de Chrome
     ruta_sesion = os.path.join(directorio_actual, "sesion_whatsapp_chrome")
-
     chrome_options.add_argument(f"user-data-dir={ruta_sesion}")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option("useAutomationExtension", False)
 
     try:
-        # CAMBIO: Inicialización del driver de Chrome
+        # Se inicializa el driver de Chrome
         driver = webdriver.Chrome(options=chrome_options)
     except Exception as e:
-        messagebox.showerror("Error",
-                             f"Asegúrate de tener Google Chrome instalado y cerrar otras ventanas que usen este perfil.\n{e}")
+        messagebox.showerror("Error", f"Cierra otras ventanas de Chrome que usen este perfil.\n{e}")
         return
 
     driver.get("https://web.whatsapp.com")
@@ -71,56 +78,71 @@ def iniciar_envio(df_filtrado):
     for index, fila in df_agrupado.iterrows():
         nombre = str(fila['NOMBRE']).strip()
         carnets = str(fila['CARNET']).strip()
-
         num_limpio = "".join(filter(str.isdigit, str(fila['NUMERO'])))
-        # Definir ladas de USA
-        ladas_usa = ("213", "310", "323", "415", "619", "818", "916")
 
-        if num_limpio.startswith(ladas_usa):
-            numero = "1" + num_limpio
-        elif num_limpio.startswith("1") and len(num_limpio) > 10 and num_limpio[1:4] in ladas_usa:
+        if num_limpio.startswith("52"):
+            numero = num_limpio
+        elif num_limpio.startswith("1") and len(num_limpio) > 10:
             numero = num_limpio
         else:
-            numero = "52" + num_limpio if not num_limpio.startswith("52") else num_limpio
+            es_mexico = any(num_limpio.startswith(lada) for lada in lista_ladas_mex)
+            numero = ("52" + num_limpio) if es_mexico else ("1" + num_limpio)
 
+        saludo = random.choice(["Buen día", "Hola", "Le saludamos del CRIT"])
         mensaje_completo = (
-            f"Buen día {nombre}, le recordamos la cita del paciente con carnet {carnets} "
+            f"{saludo}, le recordamos la cita de {nombre} con carnet {carnets} "
             f"programada para el día {fila['FECHA DE CITA']} a las {fila['HORA']} en CRIT Tijuana. "
-            f"En caso de no poder asistir, favor de comunicarse al número 664 900 9900. ¡Gracias!"
+            f"En caso de no poder asistir, favor de comunicarse al 664 900 9900. ¡Gracias!"
         )
 
         url = f"https://web.whatsapp.com/send?phone={numero}&text={urllib.parse.quote(mensaje_completo)}"
         driver.get(url)
 
         try:
-            # Espera a que el cuadro de mensaje esté presente
-            wait = WebDriverWait(driver, 35)
-            caja_texto = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'div[contenteditable="true"][data-tab="10"]')))
+            wait = WebDriverWait(driver, 25)
 
-            time.sleep(3)
+            # --- DETECTOR DE ESTADO ---
+            intentos_deteccion = 0
+            while intentos_deteccion < 6:
+                # 1. ¿Número inexistente?
+                error_buttons = driver.find_elements(By.XPATH,
+                                                     '//div[@role="button"][contains(., "OK") or contains(., "Aceptar") or contains(., "Cerrar")]')
+                if error_buttons:
+                    print(f"⚠️ Detectado número inexistente: {nombre}")
+                    error_buttons[0].click()
+                    fallidos.append(f"{nombre} ({numero}) - No existe")
+                    time.sleep(2)
+                    break
 
-            # Verificación de número inválido
-            error_popup = driver.find_elements(By.XPATH,
-                                               '//div[contains(text(), "inválido") or contains(text(), "no existe")]')
+                # 2. ¿Caja de mensaje lista?
+                caja = driver.find_elements(By.CSS_SELECTOR, 'div[contenteditable="true"][data-tab="10"]')
+                if caja:
+                    time.sleep(3)
+                    caja[0].send_keys(Keys.ENTER)
+                    enviados += 1
+                    print(f"✅ {enviados}. Enviado: {nombre}")
+                    break
 
-            if error_popup:
-                fallidos.append(f"{nombre} ({numero}) - No existe")
-                continue
+                time.sleep(2)
+                intentos_deteccion += 1
 
-            caja_texto.send_keys(Keys.ENTER)
-            enviados += 1
-            print(f"✅ Enviado: {nombre}")
+            if intentos_deteccion == 6:
+                raise Exception("Tiempo de espera agotado para este mensaje")
 
-        except Exception:
+        except Exception as e:
             fallidos.append(f"{nombre} ({numero}) - Error de carga")
-            print(f"❌ Falló: {nombre}")
+            print(f"❌ Error en {nombre}: {e}")
 
-        time.sleep(random.randint(4, 8))
+        # --- PAUSAS ANTI-BLOQUEO ---
+        time.sleep(random.randint(20, 35))
 
-        # Pausa larga cada 15 mensajes para evitar bloqueos
-        if (index + 1) % 15 == 0:
-            time.sleep(random.randint(40, 60))
+        if enviados > 0 and enviados % 15 == 0:
+            print("☕ Pausa de 2 min...")
+            time.sleep(120)
+
+        if enviados > 0 and enviados % 40 == 0:
+            print("⏳ PAUSA CRÍTICA (10 min)...")
+            time.sleep(600)
 
     driver.quit()
     resumen = f"✅ Proceso finalizado\n\nEnviados: {enviados}"
@@ -128,21 +150,26 @@ def iniciar_envio(df_filtrado):
         resumen += "\n\n❌ No enviados:\n" + "\n".join(fallidos)
     messagebox.showinfo("Resumen", resumen)
 
-
 # =========================
-# RESTO DEL CÓDIGO (Igual)
+# FILTRADO POR HORARIO
 # =========================
 def procesar_seleccion(opcion):
     try:
         directorio_actual = os.path.dirname(os.path.abspath(__file__))
-        # Aquí se le cambia el nombre
         ruta_csv = os.path.join(directorio_actual, 'Book.csv')
 
-        df = pd.read_csv(ruta_csv, sep=None, engine='python', dtype={"CARNET": str})
+        df = pd.read_csv(
+            ruta_csv,
+            sep=None,
+            engine='python',
+            dtype={"CARNET": str}
+        )
+
         df.columns = df.columns.str.strip()
         df['Hora_DT'] = pd.to_datetime(df['HORA'], errors='coerce').dt.time
 
         from datetime import time as dt_time
+
         if opcion == 1:
             df_filtrado = df[(df['Hora_DT'] >= dt_time(7, 0)) & (df['Hora_DT'] <= dt_time(11, 0))]
         elif opcion == 2:
@@ -153,18 +180,27 @@ def procesar_seleccion(opcion):
         root.withdraw()
         iniciar_envio(df_filtrado)
         root.deiconify()
+
     except Exception as e:
         messagebox.showerror("Error", f"Detalle: {e}")
 
-
+# =========================
+# INTERFAZ GRÁFICA
+# =========================
 root = tk.Tk()
-root.title("Notificador CRIT")
+root.title("Notificador CRIT (Chrome Version)")
 root.geometry("450x650")
 root.resizable(False, False)
 root.configure(bg=COLOR_PRIMARIO)
 
 try:
     ruta_script = os.path.dirname(os.path.abspath(__file__))
+    ruta_icono = os.path.join(ruta_script, "icono.ico")
+    root.iconbitmap(ruta_icono)
+except Exception:
+    pass
+
+try:
     img_path = os.path.join(ruta_script, "logo.png")
     img = Image.open(img_path)
     img = img.resize((200, 160), Image.LANCZOS)

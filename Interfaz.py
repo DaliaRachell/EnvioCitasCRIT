@@ -13,7 +13,6 @@ import tkinter as tk
 from tkinter import messagebox
 from PIL import Image, ImageTk
 import ctypes
-
 # =========================
 # CONFIGURACIÓN DE PANTALLA
 # =========================
@@ -36,16 +35,23 @@ def iniciar_envio(df_filtrado):
         messagebox.showwarning("Sin datos", "No hay registros en el bloque seleccionado.")
         return
 
-    # Se ajustaron los nombres a MAYÚSCULAS
+    directorio_actual = os.path.dirname(os.path.abspath(__file__))
+    ruta_ladas = os.path.join(directorio_actual, 'ladas_mexico.csv')
+
+    try:
+        df_ladas = pd.read_csv(ruta_ladas, dtype=str)
+        lista_ladas_mex = df_ladas.iloc[:, 0].tolist()
+    except Exception as e:
+        messagebox.showerror("Error", f"No se pudo cargar ladas_mexico.csv: {e}")
+        return
+
     df_agrupado = df_filtrado.groupby(['NUMERO', 'NOMBRE', 'FECHA DE CITA']).agg({
         'CARNET': lambda x: ', '.join(map(str, x.unique())),
         'HORA': lambda x: ' y '.join(map(str, x.unique()))
     }).reset_index()
 
     edge_options = Options()
-    directorio_actual = os.path.dirname(os.path.abspath(__file__))
     ruta_sesion = os.path.join(directorio_actual, "sesion_whatsapp")
-
     edge_options.add_argument(f"user-data-dir={ruta_sesion}")
     edge_options.add_argument("--disable-blink-features=AutomationControlled")
     edge_options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -65,54 +71,73 @@ def iniciar_envio(df_filtrado):
     for index, fila in df_agrupado.iterrows():
         nombre = str(fila['NOMBRE']).strip()
         carnets = str(fila['CARNET']).strip()
-
-        # Limpieza de número
         num_limpio = "".join(filter(str.isdigit, str(fila['NUMERO'])))
-        # Definir ladas de USA
-        ladas_usa = ("213", "310", "323", "415", "619", "818", "916")
 
-        if num_limpio.startswith(ladas_usa):
-            numero = "1" + num_limpio
-        elif num_limpio.startswith("1") and len(num_limpio) > 10 and num_limpio[1:4] in ladas_usa:
+        if num_limpio.startswith("52"):
+            numero = num_limpio
+        elif num_limpio.startswith("1") and len(num_limpio) > 10:
             numero = num_limpio
         else:
-            numero = "52" + num_limpio if not num_limpio.startswith("52") else num_limpio
+            es_mexico = any(num_limpio.startswith(lada) for lada in lista_ladas_mex)
+            numero = ("52" + num_limpio) if es_mexico else ("1" + num_limpio)
 
+        saludo = random.choice(["Buen día", "Hola", "Le saludamos del CRIT"])
         mensaje_completo = (
-            f"Buen día {nombre}, le recordamos la cita del paciente con carnet {carnets} "
+            f"{saludo}, le recordamos la cita de {nombre} con carnet {carnets} "
             f"programada para el día {fila['FECHA DE CITA']} a las {fila['HORA']} en CRIT Tijuana. "
-            f"En caso de no poder asistir, favor de comunicarse al número 664 900 9900. ¡Gracias!"
+            f"En caso de no poder asistir, favor de comunicarse al 664 900 9900. ¡Gracias!"
         )
 
         url = f"https://web.whatsapp.com/send?phone={numero}&text={urllib.parse.quote(mensaje_completo)}"
         driver.get(url)
 
         try:
-            wait = WebDriverWait(driver, 30)
-            caja_texto = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'div[contenteditable="true"][data-tab="10"]')))
+            # Esperar a que la página responda
+            wait = WebDriverWait(driver, 20)
 
-            time.sleep(2)
-            error_popup = driver.find_elements(By.XPATH,
-                                               '//div[contains(text(), "inválido") or contains(text(), "no existe")]')
+            # --- DETECTOR DE ERROR MEJORADO ---
+            # Buscamos el botón de cerrar error usando múltiples estrategias
+            intentos_error = 0
+            while intentos_error < 5:  # Revisamos durante unos segundos si sale el error
+                error_buttons = driver.find_elements(By.XPATH,
+                                                     '//div[@role="button"][contains(., "OK") or contains(., "Aceptar") or contains(., "Cerrar")]')
+                if error_buttons:
+                    print(f"⚠️ Detectado número inexistente: {nombre}")
+                    error_buttons[0].click()  # Dar clic al botón OK
+                    fallidos.append(f"{nombre} ({numero}) - No existe")
+                    time.sleep(2)
+                    break
 
-            if error_popup:
-                fallidos.append(f"{nombre} ({numero}) - No existe")
-                continue
+                # Si aparece la caja de texto, es que el número SÍ existe
+                caja = driver.find_elements(By.CSS_SELECTOR, 'div[contenteditable="true"][data-tab="10"]')
+                if caja:
+                    time.sleep(3)  # Esperar a que el texto se cargue en la caja
+                    caja[0].send_keys(Keys.ENTER)
+                    enviados += 1
+                    print(f"✅ {enviados}. Enviado: {nombre}")
+                    break
 
-            time.sleep(1)
-            caja_texto.send_keys(Keys.ENTER)
-            enviados += 1
-            print(f"✅ Enviado: {nombre}")
+                time.sleep(2)
+                intentos_error += 1
 
-        except Exception:
-            fallidos.append(f"{nombre} ({numero}) - No existe el número")
-            print(f"❌ Falló: {nombre}")
+            if intentos_error == 5:
+                raise Exception("No se detectó ni error ni caja de texto")
 
-        time.sleep(random.randint(4, 7))
+        except Exception as e:
+            fallidos.append(f"{nombre} ({numero}) - Error de carga")
+            print(f"❌ Error en {nombre}: {e}")
 
-        if (index + 1) % 15 == 0:
-            time.sleep(random.randint(40, 60))
+        # --- PAUSAS ANTI-BLOQUEO ---
+        # No reduzcas estos tiempos, son para que no te bloqueen de nuevo
+        time.sleep(random.randint(20, 35))
+
+        if enviados > 0 and enviados % 15 == 0:
+            print("☕ Pausa de 2 min...")
+            time.sleep(120)
+
+        if enviados > 0 and enviados % 40 == 0:
+            print("⏳ PAUSA CRÍTICA (10 min) para evitar baneo del número...")
+            time.sleep(600)
 
     driver.quit()
     resumen = f"✅ Proceso finalizado\n\nEnviados: {enviados}"
